@@ -217,6 +217,47 @@ BROWSER_TIMEOUT = 20
 # ------------------------------------------------------------------------------
 USE_API_LOGIN = True
 
+# ------------------------------------------------------------------------------
+# 1.13c - API_TIMEOUT_SECONDS (جديد - مهلة انتظار الرد من API)
+# ------------------------------------------------------------------------------
+# ايه ده؟ كام ثانية يستنى البوت رد سيرفر فودافون قبل ما يقول "الاتصال اتأخر"
+# ليه مهم؟ لو النت بطيء أو سيرفرات فودافون ضغطة، 30 ثانية ممكن تبقى قليلة أو كتيرة
+# الديفولت: 30 ثانية
+# لو غيرته لـ 10: أسرع في إكتشاف المشكلة بس ممكن يفوت ردود بطيئة
+# لو غيرته لـ 60: صبور جداً (لو النت بتاع السيرفر بطيء)
+# تقدر تغيره من تليجرام: ⚙️ -> ⏱️ مهلة API
+# ------------------------------------------------------------------------------
+API_TIMEOUT_SECONDS = 30
+
+# ------------------------------------------------------------------------------
+# 1.13d - QUIET_MODE (جديد - الوضع الهادئ)
+# ------------------------------------------------------------------------------
+# ايه ده؟ لو شغال، البوت يبعت "رسالة البداية" و"الملخص الأخير" بس
+# ويسكت عن رسايل كل محاولة وكل رقم (مفيد لو عندك أرقام كتير ومش عايز زحمة رسايل)
+# الديفولت: False (مفصل - يبعت كل حاجة زي الأول)
+# تقدر تغيره من تليجرام: ⚙️ -> 🔕 الوضع الهادئ
+# ------------------------------------------------------------------------------
+QUIET_MODE = False
+
+# ------------------------------------------------------------------------------
+# 1.13e - SELENIUM_FALLBACK (جديد - التحول التلقائي للمتصفح)
+# ------------------------------------------------------------------------------
+# ايه ده؟ لو API فشل 3 مرات ورا بعض، يحول للسيلينيوم (المتصفح) تلقائياً
+# مفيد إمتى؟ لو فودافون حاجبين الـ API من الـ IP بتاع سيرفرك
+# الديفولت: False (مطفي - يفضل جرب API)
+# تقدر تغيره من تليجرام: ⚙️ -> 🔄 Fallback سيلينيوم
+# ------------------------------------------------------------------------------
+SELENIUM_FALLBACK = False
+
+# ------------------------------------------------------------------------------
+# 1.13f - MAX_ACCOUNTS (جديد - الحد الأقصى للأرقام لكل مستخدم)
+# ------------------------------------------------------------------------------
+# ايه ده؟ كام رقم أقصى حدا يقدر يضيف؟ (حماية من تضخم ملف البيانات)
+# الديفولت: 20
+# تقدر تغيره من تليجرام: ⚙️ -> 📦 الحد الأقصى للأرقام (5-50)
+# ------------------------------------------------------------------------------
+MAX_ACCOUNTS = 20
+
 # ==============================================================================
 #                         💾 إعدادات الملفات
 # ==============================================================================
@@ -321,6 +362,93 @@ except ImportError:
 
 # ---- احتياطات عامة ----
 DATA_LOCK = threading.Lock()  # قفل عشان ميحصلش تضارب لما اتنين يفحصوا في نفس الوقت
+
+# ---- زرار الإيقاف: كل شات ليه حدث (Event) يوقف الفحص فوراً ----
+STOP_EVENTS = {}  # chat_id -> threading.Event (لما يعمل set الفحص بيقف)
+
+# ---- جلسة HTTP مشتركة فيها إعادة محاولة تلقائية لأخطاء الشبكة ----
+_HTTP_SESSION = None
+
+def get_http_session():
+    """جلسة requests واحدة بتتحمل إعادة المحاولة تلقائياً لو الشبكة قطعت ثانية"""
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        import requests
+        from requests.adapters import HTTPAdapter
+        try:
+            from urllib3.util.retry import Retry
+            # يعيد محاولة الاتصال مرتين تلقائياً لو السيرفر قفل الخط فجأة
+            # backoff_factor=1 => يستنى 1ث ثم 2ث بين المحاولات
+            retry = Retry(total=2, connect=2, read=2, backoff_factor=1,
+                          status_forcelist=[502, 503, 504], allowed_methods=None)
+            adapter = HTTPAdapter(max_retries=retry, pool_maxsize=10)
+            s = requests.Session()
+            s.mount("https://", adapter)
+            s.mount("http://", adapter)
+            _HTTP_SESSION = s
+        except Exception as e:
+            print(f"⚠️ مشكلة في إعداد إعادة المحاولة التلقائية: {e} - هيعمل بدونها")
+            _HTTP_SESSION = requests.Session()
+    return _HTTP_SESSION
+
+# ------------------------------------------------------------------------------
+# 🈯 مترجم الأخطاء - يترجم أخطاء بايثون التقنية لعربي مفهوم
+# ------------------------------------------------------------------------------
+def friendly_error(e):
+    """
+    يترجم خطأ الاتصال التقني (زي RemoteDisconnected) لرسالة عربي واضحة
+    بتقول: ايه اللي حصل + هل ده من الرقم/الباسورد ولا لأ
+    """
+    s = str(e)
+    etype = type(e).__name__
+    if "RemoteDisconnected" in s or etype == "RemoteDisconnected" or "Connection aborted" in s:
+        return ("🌐 سيرفر فودافون قفل الاتصال من غير ما يرد\n"
+                "💡 ده **مش** باسوردك ولا رقمك — غالباً حماية فودافون شاكة في سيرفر البوت، أو سيرفراتهم ضغطة/صيانة. ساعات بيتصلح لوحده بالتكرار")
+    if "NewConnectionError" in s or "Failed to establish" in s or "Name or service not known" in s or "getaddrinfo" in s:
+        return ("🌐 البوت مش قادر يوصل لسيرفر فودافون أصلاً\n"
+                "💡 دي مشكلة إنترنت/DNS على السيرفر اللي شغال عليه البوت — اتأكد ان السيرفر نفسه نازل النت")
+    if "ReadTimeout" in s or "ConnectTimeout" in s or etype == "TimeoutError" or "timed out" in s.lower():
+        return ("⏱️ سيرفر فودافون اتأخر جداً في الرد وقطع الاتصال (مهلة انتظار)\n"
+                "💡 السيرفر بتاع فودافون بطيء/مشغول دلوقتي — غالباً هينفع من محاولة تانية")
+    if "SSLError" in s or "CERTIFICATE" in s.upper():
+        return ("🔐 مشكلة شهادة أمان (SSL) بين السيرفر وفودافون\n"
+                "💡 ممكن الساعة/تاريخ السيرفر غلط أو في تدخل شبكي (فايروس/بروكسي)")
+    if "ProxyError" in s:
+        return ("🌐 مشكلة بروكسي على السيرفر — الاتصال بيعدّي على وسيط بيرفضه فودافون")
+    if "TooManyRedirects" in s:
+        return ("🌐 فودافون بعمل تحويل صفحات لانهائي — الحماية عندهم رفضت الطلب")
+    if "ChunkedEncoding" in s or "ConnectionReset" in s or "Connection reset" in s:
+        return ("🌐 الرد من فودافون اتقطع في نص الطريق — الشبكة بينك وبينهم مش مستقرة")
+    return f"❌ خطأ غير معروف: {s[:100]}"
+
+def friendly_status(status_code, server_msg=""):
+    """يترجم كود الرد من سيرفر فودافون لرسالة مفهومة"""
+    if status_code == 403:
+        return ("⛔ فودافون رفضت الطلب (كود 403)\n"
+                "💡 غالباً الحماية بتاعتهم حاجب IP السيرفر اللي البوت شغال عليه — ده مش من الرقم أو الباسورد")
+    if status_code == 429:
+        return ("⚠️ طلبات كتير جداً في وقت قصير (كود 429)\n"
+                "💡 فودافون عمل تقييد مؤقت — استنى شوية أو زود وقت الانتظار من ⚙️")
+    if status_code and 500 <= status_code < 600:
+        return (f"🛠️ سيرفر فودافون نفسه فيه مشكلة (كود {status_code})\n"
+                "💡 دي صيانة/عطل عندهم — مش منك، جرب بعد شوية")
+    if server_msg:
+        return f"❌ السيرفر رفض الطلب (كود {status_code}): {server_msg[:80]}"
+    return f"❌ السيرفر رجع رد غير متوقع (كود {status_code})"
+
+def classify_error(msg):
+    """
+    يصنف رسالة الخطأ: wrong (باسورد) / locked (حساب معلق) / connection (شبكة) / generic
+    عشان البوت يعرف يقولك 'هعيد' ولا 'هينتقل للرقم اللي بعده' ويختار الرمز المناسب
+    """
+    m = str(msg)
+    if "الباسورد غلط" in m or "غير صحيح" in m:
+        return "wrong"
+    if "الحساب معلق" in m:
+        return "locked"
+    if "🌐" in m or "⏱️" in m or "⛔ فودافون" in m or "🛠️" in m or "⚠️ طلبات" in m or "🔐 مشكلة" in m:
+        return "connection"
+    return "generic"
 
 def escape_md(text):
     """تهرب الرموز اللي بتكسر Markdown في تليجرام"""
@@ -457,7 +585,11 @@ def get_user_data(chat_id):
                 "retry_delay": RETRY_DELAY_SECONDS,  # من 1.7 فوق
                 "auto_check_enabled": AUTO_CHECK_ENABLED,  # من 1.9 فوق
                 "auto_check_interval": AUTO_CHECK_INTERVAL_MINUTES,  # من 1.10 فوق
-                "delay_between_numbers": DELAY_BETWEEN_NUMBERS  # من 1.11 فوق
+                "delay_between_numbers": DELAY_BETWEEN_NUMBERS,  # من 1.11 فوق
+                "api_timeout": API_TIMEOUT_SECONDS,  # من 1.13c فوق
+                "quiet_mode": QUIET_MODE,  # من 1.13d فوق
+                "selenium_fallback": SELENIUM_FALLBACK,  # من 1.13e فوق
+                "max_accounts": MAX_ACCOUNTS  # من 1.13f فوق
             },
             "last_results": [],  # آخر نتائج فحص
             "last_check_time": "",  # وقت آخر فحص
@@ -546,6 +678,19 @@ def get_user_data(chat_id):
         if "retry_delay" not in s:
             s["retry_delay"] = RETRY_DELAY_SECONDS
             updated = True
+        # الإعدادات الجديدة (مهلة API / هادئ / fallback سيلينيوم / حد الأرقام)
+        if "api_timeout" not in s:
+            s["api_timeout"] = API_TIMEOUT_SECONDS
+            updated = True
+        if "quiet_mode" not in s:
+            s["quiet_mode"] = QUIET_MODE
+            updated = True
+        if "selenium_fallback" not in s:
+            s["selenium_fallback"] = SELENIUM_FALLBACK
+            updated = True
+        if "max_accounts" not in s:
+            s["max_accounts"] = MAX_ACCOUNTS
+            updated = True
         # احتياط: اضبط القيم لو حد لعب في الملف وحط رقم غلط (مثلاً 100)
         try:
             s["max_retries"] = max(1, min(10, int(s.get("max_retries", MAX_RETRIES))))
@@ -554,6 +699,10 @@ def get_user_data(chat_id):
             s["retry_delay"] = max(1, min(60, int(s.get("retry_delay", RETRY_DELAY_SECONDS))))
             s["delay_between_numbers"] = max(0, min(30, int(s.get("delay_between_numbers", DELAY_BETWEEN_NUMBERS))))
             s["auto_check_interval"] = max(5, min(1440, int(s.get("auto_check_interval", AUTO_CHECK_INTERVAL_MINUTES))))
+            s["api_timeout"] = max(10, min(60, int(s.get("api_timeout", API_TIMEOUT_SECONDS))))
+            s["max_accounts"] = max(5, min(50, int(s.get("max_accounts", MAX_ACCOUNTS))))
+            s["quiet_mode"] = bool(s.get("quiet_mode", QUIET_MODE))
+            s["selenium_fallback"] = bool(s.get("selenium_fallback", SELENIUM_FALLBACK))
         except:
             pass
         if updated:
@@ -629,9 +778,13 @@ def add_account(chat_id, phone, password, name=""):
     if len(password) < 4:
         return False, "الباسورد قصير جداً (4 أحرف على الأقل)"
     user_data = get_user_data(chat_id)
-    # احتياط: حد أقصى 20 رقم لكل مستخدم (عشان الملف ميكبرش ويهنج)
-    if len(user_data["accounts"]) >= 20:
-        return False, "عندك 20 رقم بالفعل - الحد الأقصى 20 (احذف واحد الأول)" 
+    # الحد الأقصى للأرقام - بيتاخد من إعدادات المستخدم (5-50)
+    try:
+        max_acc = int(user_data["settings"].get("max_accounts", MAX_ACCOUNTS))
+    except:
+        max_acc = MAX_ACCOUNTS
+    if len(user_data["accounts"]) >= max_acc:
+        return False, f"وصلت للحد الأقصى ({max_acc} رقم) - احذف واحد الأول أو زود الحد من ⚙️ الإعدادات"
     for acc in user_data["accounts"]:
         if acc["phone"] == phone:
             return False, "الرقم ده موجود قبل كده!"
@@ -830,8 +983,8 @@ def create_driver():
 # ------------------------------------------------------------------------------
 # 4.1b - API فودافون (مأخوذ من الملف القديم - أسرع من السيلينيوم)
 # ------------------------------------------------------------------------------
-def get_authorization_api(number, password):
-    """تسجيل دخول API - نفس طريقة الملف القديم - أسرع 10 مرات من السيلينيوم"""
+def get_authorization_api(number, password, timeout=None):
+    """تسجيل دخول API - أسرع 10 مرات من السيلينيوم - برسائل خطأ واضحة بالعربي"""
     url = "https://mobile.vodafone.com.eg/auth/realms/vf-realm/protocol/openid-connect/token"
     data = {
         "grant_type": "password",
@@ -849,29 +1002,50 @@ def get_authorization_api(number, password):
         'clientId': "AnaVodafoneAndroid",
         'Accept-Language': "ar",
     }
+    if timeout is None:
+        timeout = API_TIMEOUT_SECONDS
     try:
-        import requests
-        resp = requests.post(url, data=data, headers=headers, timeout=30)
+        resp = get_http_session().post(url, data=data, headers=headers, timeout=timeout)
         if resp.status_code == 200:
             j = resp.json()
             tok = j.get("access_token")
             if tok:
                 return {"success": True, "token": tok, "bearer": "Bearer " + tok, "raw": j}
-        # حاول ترجع رسالة الخطأ
+            return {"success": False, "is_wrong": False, "category": "server",
+                    "message": "⚠️ سيرفر فودافون رجع رد ناقص (من غير توكن الدخول)\n💡 غالباً ضغط/صيانة عندهم — جرب تاني"}
+        # نحاول نقرا رسالة السيرفر
         try:
             j = resp.json()
-            msg = j.get("error_description") or j.get("error") or str(j)[:200]
+            err = str(j.get("error") or "")
+            desc = str(j.get("error_description") or j.get("error") or "")[:150]
         except:
-            msg = resp.text[:200]
-        if resp.status_code in [400,401,403]:
-            return {"success": False, "message": f"الباسورد غلط أو الرقم غير صحيح ({msg[:80]})", "is_wrong": True}
-        return {"success": False, "message": f"فشل تسجيل الدخول: {resp.status_code} {msg[:80]}", "is_wrong": False}
+            err, desc = "", resp.text[:150]
+        low = (err + " " + desc).lower()
+        # --- تصنيف الرفض ---
+        if "invalid_grant" in low and ("credential" in low or "password" in low or "invalid_user" in low):
+            return {"success": False, "is_wrong": True, "category": "wrong",
+                    "message": f"🔴 الباسورد غلط — فودافون رفضت تسجيل الدخول{(' — الموقع قال: ' + desc) if desc else ''}"}
+        if "disabled" in low or "locked" in low or "temporary" in low or "not fully set up" in low:
+            return {"success": False, "is_wrong": False, "category": "locked",
+                    "message": f"⛔ الحساب معلق أو متوقف مؤقتاً عند فودافون{(' — الموقع قال: ' + desc) if desc else ''}"}
+        if "invalid_client" in low or "unauthorized_client" in low:
+            return {"success": False, "is_wrong": False, "category": "server",
+                    "message": "🛠️ إعدادات الـ API بتاعة البوت اتغيرت عند فودافون — كلم المطور\n(الموقع قال: " + (desc or "invalid client") + ")"}
+        if resp.status_code in (400, 401):
+            return {"success": False, "is_wrong": True, "category": "wrong",
+                    "message": f"🔴 الرقم أو الباسورد مش مظبوط — فودافون رفضت تسجيل الدخول{(' — الموقع قال: ' + desc) if desc else ''}"}
+        return {"success": False, "is_wrong": False, "category": "http",
+                "message": friendly_status(resp.status_code, desc)}
     except Exception as e:
-        return {"success": False, "message": f"خطأ اتصال: {str(e)[:100]}", "is_wrong": False}
+        return {"success": False, "is_wrong": False, "category": "connection",
+                "message": friendly_error(e)}
 
-def get_balance_api(token, phone):
-    """يجرب يجيب الرصيد/الفليكسات بـ 3 طرق API مختلفة (من الملف القديم)"""
-    import requests
+def get_balance_api(token, phone, timeout=None):
+    """يجرب يجيب الرصيد/الفليكسات بـ 3 طرق API مختلفة (من الملف القديم) - برسائل واضحة"""
+    if timeout is None:
+        timeout = API_TIMEOUT_SECONDS
+    session = get_http_session()
+    last_err = ""
     # طريقة 1: Balance API (المفضلة)
     try:
         url = "https://mobile.vodafone.com.eg/services/dxl/bal/balance/v2/balances"
@@ -885,7 +1059,7 @@ def get_balance_api(token, phone):
             'msisdn': phone,
             'Accept-Language': "ar",
         }
-        r = requests.get(url, params={'accountNumber': phone, 'balanceType': 'CurrentBalance'}, headers=headers, timeout=20)
+        r = session.get(url, params={'accountNumber': phone, 'balanceType': 'CurrentBalance'}, headers=headers, timeout=timeout)
         if r.status_code == 200:
             j = r.json()
             # حاول تستخرج الرصيد
@@ -908,7 +1082,7 @@ def get_balance_api(token, phone):
                 return True, f"الرصيد: {nums[0]} جنيه (API1)"
             return True, f"تم تسجيل الدخول - الرد: {str(j)[:200]}"
     except Exception as e:
-        pass
+        last_err = friendly_error(e).split("\n")[0]
     # طريقة 2: usageConsumptionReport (MoneyBack/فليكس)
     try:
         url = "https://mobile.vodafone.com.eg/services/dxl/usage/usageConsumptionReport"
@@ -920,7 +1094,7 @@ def get_balance_api(token, phone):
             'msisdn': phone,
             'Accept-Language': "ar",
         }
-        r = requests.get(url, params={'@type': 'aggregated', 'bucket.product.publicIdentifier': phone}, headers=headers, timeout=20)
+        r = session.get(url, params={'@type': 'aggregated', 'bucket.product.publicIdentifier': phone}, headers=headers, timeout=timeout)
         if r.status_code == 200:
             j = r.json()
             # دور على فليكس
@@ -942,29 +1116,37 @@ def get_balance_api(token, phone):
                 return True, f"بيانات الاستهلاك: {nums[:3]}"
             return True, f"تم تسجيل الدخول - بيانات الاستهلاك: {str(j)[:200]}"
     except Exception as e:
-        pass
-    # طريقة 3: لو الاتنين فشلوا، اعتبر تسجيل الدخول نفسه نجاح (الرصيد هيجي بعدين)
-    return True, "تم تسجيل الدخول بنجاح ✅ (الرصيد سيظهر في التطبيق)"
+        last_err = friendly_error(e).split("\n")[0]
+    # طريقة 3: لو الاتنين فشلوا - نقول الحقيقة بوضوح
+    if last_err:
+        return True, f"✅ تسجيل الدخول نجح | ⚠️ جلب الرصيد فشل: {last_err[:80]}"
+    return True, "✅ تسجيل الدخول نجاح - الرصيد هتشوفه في تطبيق أنا فودافون"
 
 def login_and_get_balance_api(phone, password, attempt_num, chat_settings):
-    """البديل السريع لـ login_and_get_balance_detailed - يستخدم API فقط"""
-    details = f"🔄 محاولة {attempt_num} (API)\n"
+    """البديل السريع لـ login_and_get_balance_detailed - يستخدم API فقط - برسائل واضحة"""
+    api_timeout = 30
     try:
+        api_timeout = int(chat_settings.get("api_timeout", API_TIMEOUT_SECONDS))
+    except:
+        pass
+    details = f"🔄 محاولة {attempt_num} (API ⚡)\n"
+    try:
+        t0 = time.time()
         details += "🌐 تسجيل دخول API...\n"
-        auth = get_authorization_api(phone, password)
+        auth = get_authorization_api(phone, password, timeout=api_timeout)
         if not auth["success"]:
             msg = auth["message"]
             is_wrong = auth.get("is_wrong", False)
             if is_wrong:
-                details += f"❌ الباسورد غلط\n"
+                details += f"❌ {msg}\n"
                 return False, "الباسورد غلط - غير صحيح", details
             else:
                 details += f"❌ {msg}\n"
                 return False, msg, details
         token = auth["token"]
-        details += "✅ تم تسجيل الدخول\n"
+        details += f"✅ تم تسجيل الدخول ({time.time()-t0:.1f} ث)\n"
         details += "💰 بجيب الرصيد...\n"
-        ok, bal = get_balance_api(token, phone)
+        ok, bal = get_balance_api(token, phone, timeout=api_timeout)
         if ok:
             details += f"✅ {bal}\n"
             return True, bal, details
@@ -974,8 +1156,8 @@ def login_and_get_balance_api(phone, password, attempt_num, chat_settings):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        details += f"❌ خطأ API: {str(e)[:100]}\n"
-        return False, f"خطأ API: {str(e)[:80]}", details
+        details += f"❌ {friendly_error(e)}\n"
+        return False, friendly_error(e), details
 
 # ------------------------------------------------------------------------------
 # 4.2 - find_element_safe() : البحث عن عنصر بأمان
@@ -1399,8 +1581,12 @@ def settings_menu(chat_id):
     auto_enabled = s.get("auto_check_enabled", AUTO_CHECK_ENABLED)
     auto_interval = s.get("auto_check_interval", AUTO_CHECK_INTERVAL_MINUTES)
     delay_between = s.get("delay_between_numbers", DELAY_BETWEEN_NUMBERS)
+    api_timeout = s.get("api_timeout", API_TIMEOUT_SECONDS)
+    max_accounts = s.get("max_accounts", MAX_ACCOUNTS)
     interval_text = format_interval(auto_interval)
     auto_icon = "✅ شغال" if auto_enabled else "❌ مطفي"
+    quiet_icon = "🔕 هادئ (ملخص بس)" if s.get("quiet_mode", QUIET_MODE) else "🔔 مفصل (كل التفاصيل)"
+    fallback_icon = "✅ شغال" if s.get("selenium_fallback", SELENIUM_FALLBACK) else "❌ مطفي"
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton(f"🔁 محاولات الموقع المعلق: {s['max_retries']} (دوس للتغيير)", callback_data="set_max_retries"),
@@ -1408,6 +1594,10 @@ def settings_menu(chat_id):
         types.InlineKeyboardButton(f"⛔ محاولات الحساب المعلق: {s.get('max_retries_account_locked', 1)} (دوس للتغيير)", callback_data="set_account_locked"),
         types.InlineKeyboardButton(f"⏱️ الانتظار بين المحاولات: {s['retry_delay']} ث", callback_data="set_delay"),
         types.InlineKeyboardButton(f"⏩ الانتقال بين الأرقام: {delay_between} ث", callback_data="set_between_delay"),
+        types.InlineKeyboardButton(f"⏱️ مهلة API: {api_timeout} ث (10-60)", callback_data="set_api_timeout"),
+        types.InlineKeyboardButton(f"🔕 الوضع الهادئ: {quiet_icon}", callback_data="toggle_quiet"),
+        types.InlineKeyboardButton(f"🔄 Fallback سيلينيوم: {fallback_icon} (لو API فشل 3 مرات)", callback_data="toggle_fallback"),
+        types.InlineKeyboardButton(f"📦 الحد الأقصى للأرقام: {max_accounts} (5-50)", callback_data="set_max_accounts"),
         types.InlineKeyboardButton(f"🔄 الفحص التلقائي: {auto_icon} (دوس للتغيير)", callback_data="toggle_auto"),
         types.InlineKeyboardButton(f"⏰ مهلة الفحص التلقائي: {interval_text} ({auto_interval} د)", callback_data="set_auto_interval"),
         types.InlineKeyboardButton("🔙 رجوع للقائمة الرئيسية", callback_data="main_menu")
@@ -1444,15 +1634,18 @@ def handle_start(message):
 
 **إحصائياتك:**
 • الأرقام: `{len(get_user_data(message.chat.id)['accounts'])}`
-• محاولات المعلق: `{s['max_retries']}` (لو الموقع مهنج)
-• محاولات الباسورد الغلط: `{s['max_retries_wrong_password']}` (الديفولت 1)
+• محاولات المعلق: `{s['max_retries']}` | باسورد غلط: `{s['max_retries_wrong_password']}` | حساب معلق: `{s.get('max_retries_account_locked',1)}`
+• مهلة API: `{s.get('api_timeout',30)}ث` | الوضع الهادئ: `{'🔕' if s.get('quiet_mode') else '🔔'}` | Fallback: `{'✅' if s.get('selenium_fallback') else '❌'}`
 • الفحص التلقائي: `{'✅ شغال كل ' + format_interval(s.get('auto_check_interval', 80)) if s.get('auto_check_enabled') else '❌ مطفي'}`
 
 **القوائم:**
 • 📱 عرض الأرقام - تشوف كل الأرقام + إعداداتك
 • ➕ إضافة رقم - بالشكل `010...:الباسورد`
-• 💰 فحص الكل - يفحصهم واحد واحد ويبعت تفاصيل كل محاولة
-• ⚙️ الإعدادات - تغير أي رقم فوق
+• 💰 فحص الكل - يفحصهم واحد واحد برسايل واضحة
+• ⚙️ الإعدادات - مهلة API، الوضع الهادئ، Fallback، الحد الأقصى وكل القديم
+
+**⏹️ إيقاف الفحص فوراً:**
+أول ما يبدأ فحص هتلاقي زرار `⏹️ إيقاف الفحص فوراً` تحت رسالة البداية — دوسه في أي وقت، أو ابعت `/stop` أو `/cancel` — الفحص هيقف بعد المحاولة الجارية (ثواني) ويبعتلك ملخص بالأرقام اللي فحصها واللي اتلغت.
 
 دوس على أي زرار 👇
 """
@@ -1467,13 +1660,28 @@ def handle_help(message):
 **فحص:** 💰 فحص الكل
 **الإعدادات:** ⚙️ دوس وغير أي حاجة
 
-**شرح الإعدادات:**
-• `MAX_RETRIES=10` - لو الموقع معلق يعيد 3 مرات
-• `MAX_RETRIES_WRONG_PASSWORD=1` - لو الباسورد غلط مرة واحدة بس
-• `MAX_RETRIES_ACCOUNT_LOCKED=1` - لو الحساب معلق مرة واحدة
-• `RETRY_DELAY_SECONDS=5` - يستنى 5 ثواني بين المحاولات
-• `DELAY_BETWEEN_NUMBERS=1` - ثانية بين كل رقم والتاني
-• `AUTO_CHECK_INTERVAL=80` - يعيد كل 80 دقيقة (ساعة و20د)
+**شرح الإعدادات (كلها من ⚙️):**
+• `معلق=10` - لو الموقع/الاتصال فشل يعيد 10 مرات
+• `باسورد غلط=10` - لو الباسورد غلط يعيد 10 مرات
+• `حساب معلق=10` - لو الحساب معلق يعيد 10 مرات
+• `انتظار=5ث` - بين كل محاولة والتانية
+• `انتقال=10ث` - بين كل رقم واللي بعده
+• `مهلة API=30ث` - كام ثانية يستنى رد سيرفر فودافون (10-60)
+• `الوضع الهادئ 🔕` - ملخص بس من غير تفاصيل كل رقم
+• `Fallback سيلينيوم` - لو API فشل 3 مرات يحول للمتصفح تلقائياً
+• `حد الأرقام=20` - أقصى عدد أرقام (5-50)
+• `تلقائي=80د` - يعيد الفحص كل ساعة و20 دقيقة
+
+**⏹️ إيقاف الفحص:**
+• زرار `⏹️ إيقاف الفحص فوراً` بيظهر تحت رسالة بداية الفحص
+• أو ابعت `/stop` أو `/cancel` في أي وقت
+• الفحص بيقف بعد المحاولة الجارية ويبعت ملخص
+
+**معنى رموز الأخطاء:**
+• 🔴 = الباسورد غلط (من الرقم/الباسورد)
+• ⛔ = الحساب معلق عند فودافون
+• 🌐 = مشكلة اتصال/سيرفر فودافون (مش منك)
+• 🛠️ = عطل في سيرفرات فودافون نفسها
 
 كلهم فوق في أول الملف + تقدر تغيرهم من تليجرام!
 """, reply_markup=main_menu())
@@ -1512,6 +1720,20 @@ def handle_add_command(message):
         bot.send_message(message.chat.id, f"❌ خطأ: {e}")
 
 # ------------------------------------------------------------------------------
+# 5.4b - أمر الإيقاف الفوري: /stop أو /cancel - نفس زرار ⏹️ بالظبط
+# ------------------------------------------------------------------------------
+@bot.message_handler(commands=['stop', 'cancel', 'قف', 'ايقاف'])
+def handle_stop(message):
+    if not is_allowed(message.chat.id):
+        return
+    ev = STOP_EVENTS.get(message.chat.id)
+    if ev and not ev.is_set():
+        ev.set()
+        bot.send_message(message.chat.id, "⏹️ **تمام! بقفّ الفحص حالاً...**\nهيقف بعد المحاولة الجارية (ثواني) ويبعتلك الملخص.")
+    else:
+        bot.send_message(message.chat.id, "ℹ️ مفيش فحص شغال دلوقتي — دوس 💰 فحص الكل ولو حبيت تقفل وسط الفحص ابعت /stop", reply_markup=main_menu())
+
+# ------------------------------------------------------------------------------
 # 5.5 - التعامل مع الأزرار (Callback)
 # ------------------------------------------------------------------------------
 # احتياط عام: أي خطأ في الأزرار ميوقعش البوت
@@ -1539,7 +1761,7 @@ def handle_callback(call):
         user_data = get_user_data(chat_id)
         s = user_data["settings"]
         text = get_accounts_text(chat_id)
-        text += f"\n⚙️ **إعداداتك:**\n• معلق: `{s['max_retries']}`\n• باسورد غلط: `{s['max_retries_wrong_password']}`\n• حساب معلق: `{s.get('max_retries_account_locked',1)}`\n• انتظار: `{s['retry_delay']}ث`\n• انتقال: `{s.get('delay_between_numbers',1)}ث`\n• تلقائي: `{'✅ '+format_interval(s.get('auto_check_interval',80)) if s.get('auto_check_enabled') else '❌ مطفي'}`\n"
+        text += f"\n⚙️ **إعداداتك:**\n• معلق: `{s['max_retries']}`\n• باسورد غلط: `{s['max_retries_wrong_password']}`\n• حساب معلق: `{s.get('max_retries_account_locked',1)}`\n• انتظار: `{s['retry_delay']}ث`\n• انتقال: `{s.get('delay_between_numbers',1)}ث`\n• مهلة API: `{s.get('api_timeout',30)}ث`\n• هادئ: `{'🔕' if s.get('quiet_mode') else '🔔'}`\n• Fallback سيلينيوم: `{'✅' if s.get('selenium_fallback') else '❌'}`\n• حد الأرقام: `{s.get('max_accounts',20)}`\n• تلقائي: `{'✅ '+format_interval(s.get('auto_check_interval',80)) if s.get('auto_check_enabled') else '❌ مطفي'}`\n\n⏹️ وسط الفحص؟ ابعت `/stop` أو دوس زرار الإيقاف"
         bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=main_menu())
         bot.answer_callback_query(call.id, "📱 الأرقام")
 
@@ -1565,9 +1787,29 @@ def handle_callback(call):
             bot.edit_message_text("📭 مفيش أرقام! دوس ➕ إضافة رقم.", chat_id, call.message.message_id, reply_markup=main_menu())
             bot.answer_callback_query(call.id, "📭 ضيف أرقام!")
             return
-        bot.answer_callback_query(call.id, "⏳ ببدأ...")
-        bot.edit_message_text(f"⏳ **ببدأ فحص {len(get_user_data(chat_id)['accounts'])} رقم...**", chat_id, call.message.message_id)
+        bot.answer_callback_query(call.id, "🚀 ببدأ الفحص...")
+        bot.edit_message_text(f"🚀 **ببدأ فحص {len(get_user_data(chat_id)['accounts'])} رقم...**\n\n⏹️ لو حبيت تقف: دوس الزرار اللي تحت في رسالة البداية، أو ابعت /stop", chat_id, call.message.message_id)
         threading.Thread(target=do_check_all, args=(chat_id,), daemon=True).start()
+
+    elif data.startswith("stop_"):
+        # زرار الإيقاف الفوري - بيشتغل بس لصاحب الفحص نفسه
+        target = data[5:]
+        if str(chat_id) != str(target):
+            bot.answer_callback_query(call.id, "❌ الزرار ده مش بتاعك")
+            return
+        ev = STOP_EVENTS.get(chat_id)
+        if ev and not ev.is_set():
+            ev.set()
+            bot.answer_callback_query(call.id, "⏹️ بوقف حالاً...")
+            try:
+                bot.edit_message_text("⏹️ **تمام! بقفّ الفحص حالاً...**\nهيقف بعد المحاولة الجارية (ثواني) ويبعت الملخص.", chat_id, call.message.message_id, parse_mode="Markdown")
+            except:
+                try:
+                    bot.edit_message_text("⏹️ تمام! بقفّ الفحص حالاً... هيقف بعد المحاولة الجارية (ثواني) ويبعت الملخص.", chat_id, call.message.message_id)
+                except:
+                    pass
+        else:
+            bot.answer_callback_query(call.id, "ℹ️ مفيش فحص شغال دلوقتي")
 
     elif data == "check_one":
         if not get_user_data(chat_id)["accounts"]:
@@ -1598,8 +1840,49 @@ def handle_callback(call):
 
     elif data == "settings":
         s = get_user_data(chat_id)["settings"]
-        text = f"⚙️ **الإعدادات**\n\n🔁 معلق: `{s['max_retries']}`\n🔐 باسورد غلط: `{s['max_retries_wrong_password']}`\n⛔ حساب معلق: `{s.get('max_retries_account_locked',1)}`\n⏱️ انتظار: `{s['retry_delay']}ث`\n⏩ انتقال: `{s.get('delay_between_numbers',1)}ث`\n🔄 تلقائي: `{'✅ شغال' if s.get('auto_check_enabled') else '❌ مطفي'}`\n⏰ مهلة: `{format_interval(s.get('auto_check_interval',80))}`\n\nدوس على أي واحدة 👇"
+        text = (f"⚙️ **الإعدادات**\n\n"
+                f"🔁 معلق: `{s['max_retries']}`\n"
+                f"🔐 باسورد غلط: `{s['max_retries_wrong_password']}`\n"
+                f"⛔ حساب معلق: `{s.get('max_retries_account_locked',1)}`\n"
+                f"⏱️ انتظار: `{s['retry_delay']}ث`\n"
+                f"⏩ انتقال: `{s.get('delay_between_numbers',1)}ث`\n"
+                f"⏱️ مهلة API: `{s.get('api_timeout',30)}ث`\n"
+                f"🔕 الوضع الهادئ: `{'🔕 هادئ' if s.get('quiet_mode', False) else '🔔 مفصل'}`\n"
+                f"🔄 Fallback سيلينيوم: `{'✅ شغال' if s.get('selenium_fallback', False) else '❌ مطفي'}`\n"
+                f"📦 الحد الأقصى للأرقام: `{s.get('max_accounts',20)}`\n"
+                f"🔄 تلقائي: `{'✅ شغال' if s.get('auto_check_enabled') else '❌ مطفي'}`\n"
+                f"⏰ مهلة التلقائي: `{format_interval(s.get('auto_check_interval',80))}`\n\n"
+                f"دوس على أي واحدة 👇")
         bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=settings_menu(chat_id))
+        bot.answer_callback_query(call.id)
+
+    elif data == "set_api_timeout":
+        user_states[chat_id] = "awaiting_api_timeout"
+        cur = get_user_data(chat_id)["settings"].get("api_timeout", 30)
+        bot.edit_message_text(f"⏱️ **مهلة API**\n\nالحالي: `{cur} ثانية`\n\nده كام ثانية البوت يستنى رد سيرفر فودافون قبل ما يعتبر الاتصال فاشل.\n\nابعت رقم 10-60:\n• `30` = الديفولت ✅\n• `60` = لو النت بطيء جداً\n• `10` = سريع بس ممكن يفوت ردود بطيئة\n\n💡 لو بتشوف أخطاء 🌐 اتصال كتير، زودها لـ 60\n\n✏️ ابعت الرقم الجديد:", chat_id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 رجوع", callback_data="settings")))
+        bot.answer_callback_query(call.id)
+
+    elif data == "toggle_quiet":
+        user_data = get_user_data(chat_id)
+        cur = user_data["settings"].get("quiet_mode", QUIET_MODE)
+        user_data["settings"]["quiet_mode"] = not cur
+        save_user_data(chat_id, user_data)
+        bot.answer_callback_query(call.id, f"بقى: {'🔕 هادئ' if not cur else '🔔 مفصل'}")
+        bot.edit_message_text(f"🔕 **تم التغيير!**\n\nالوضع الهادئ بقى: `{'🔕 هادئ' if not cur else '🔔 مفصل'}`\n\n{'هيبعت رسالة البداية والملخص بس — من غير تفاصيل كل رقم' if not cur else 'هيرجع يبعت تفاصيل كل محاولة وكل رقم'}", chat_id, call.message.message_id, reply_markup=settings_menu(chat_id))
+
+    elif data == "toggle_fallback":
+        user_data = get_user_data(chat_id)
+        cur = user_data["settings"].get("selenium_fallback", SELENIUM_FALLBACK)
+        user_data["settings"]["selenium_fallback"] = not cur
+        save_user_data(chat_id, user_data)
+        bot.answer_callback_query(call.id, f"بقى: {'✅ شغال' if not cur else '❌ مطفي'}")
+        note = "لو الـ API فشل 3 مرات ورا بعض، البوت هيحوّل تلقائياً للمتصفح (أبطأ بس بيتخطى حماية فودافون للـ API)" if not cur else "البوت هيفضل على الـ API بس من غير تحويل تلقائي للمتصفح"
+        bot.edit_message_text(f"🔄 **تم التغيير!**\n\nFallback سيلينيوم بقى: `{'✅ شغال' if not cur else '❌ مطفي'}`\n\n{note}", chat_id, call.message.message_id, reply_markup=settings_menu(chat_id))
+
+    elif data == "set_max_accounts":
+        user_states[chat_id] = "awaiting_max_accounts"
+        cur = get_user_data(chat_id)["settings"].get("max_accounts", 20)
+        bot.edit_message_text(f"📦 **الحد الأقصى للأرقام**\n\nالحالي: `{cur} رقم`\n\nده أكبر عدد أرقام تقدر تضيفه (حماية من تضخم ملف البيانات).\n\nابعت رقم 5-50:\n• `20` = الديفولت ✅\n• `50` = الحد الأقصى\n\n✏️ ابعت الرقم الجديد:", chat_id, call.message.message_id, reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("🔙 رجوع", callback_data="settings")))
         bot.answer_callback_query(call.id)
 
     elif data == "set_max_retries":
@@ -1634,7 +1917,7 @@ def handle_callback(call):
         save_user_data(chat_id, user_data)
         bot.answer_callback_query(call.id, f"بقى: {'✅ شغال' if not cur else '❌ مطفي'}")
         s = user_data["settings"]
-        text = f"⚙️ **تم التغيير!**\n\n🔁 معلق: `{s['max_retries']}`\n🔐 باسورد: `{s['max_retries_wrong_password']}`\n⛔ معلق: `{s.get('max_retries_account_locked',1)}`\n⏱️ انتظار: `{s['retry_delay']}ث`\n⏩ انتقال: `{s.get('delay_between_numbers',1)}ث`\n🔄 تلقائي: `{'✅ شغال' if not cur else '❌ مطفي'}`\n⏰ مهلة: `{format_interval(s.get('auto_check_interval',80))}`"
+        text = f"⚙️ **تم التغيير!**\n\n🔁 معلق: `{s['max_retries']}`\n🔐 باسورد: `{s['max_retries_wrong_password']}`\n⛔ معلق: `{s.get('max_retries_account_locked',1)}`\n⏱️ انتظار: `{s['retry_delay']}ث`\n⏩ انتقال: `{s.get('delay_between_numbers',1)}ث`\n⏱️ مهلة API: `{s.get('api_timeout',30)}ث`\n🔕 هادئ: `{'✅' if s.get('quiet_mode') else '❌'}`\n🔄 Fallback: `{'✅' if s.get('selenium_fallback') else '❌'}`\n📦 حد الأرقام: `{s.get('max_accounts',20)}`\n🔄 تلقائي: `{'✅ شغال' if not cur else '❌ مطفي'}`\n⏰ مهلة: `{format_interval(s.get('auto_check_interval',80))}`"
         bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=settings_menu(chat_id))
 
     elif data == "set_auto_interval":
@@ -1725,6 +2008,24 @@ def handle_text(message):
             else: bot.send_message(chat_id, "❌ 5-1440 بس")
         except: bot.send_message(chat_id, "❌ ابعت رقم مثل `80`")
 
+    elif state == "awaiting_api_timeout":
+        try:
+            v = int(message.text.strip())
+            if 10 <= v <= 60:
+                d = get_user_data(chat_id); d["settings"]["api_timeout"] = v; save_user_data(chat_id, d); user_states.pop(chat_id, None)
+                bot.send_message(chat_id, f"✅ مهلة API بقت `{v} ثانية`\n(لو سيرفر فودافون اتأخر أكتر من كده هيعتبرها فشل ويعيد)", reply_markup=settings_menu(chat_id))
+            else: bot.send_message(chat_id, "❌ 10-60 بس")
+        except: bot.send_message(chat_id, "❌ ابعت رقم مثل `30`")
+
+    elif state == "awaiting_max_accounts":
+        try:
+            v = int(message.text.strip())
+            if 5 <= v <= 50:
+                d = get_user_data(chat_id); d["settings"]["max_accounts"] = v; save_user_data(chat_id, d); user_states.pop(chat_id, None)
+                bot.send_message(chat_id, f"✅ الحد الأقصى بقى `{v} رقم`", reply_markup=settings_menu(chat_id))
+            else: bot.send_message(chat_id, "❌ 5-50 بس")
+        except: bot.send_message(chat_id, "❌ ابعت رقم مثل `20`")
+
     else:
         if ":" in message.text and message.text.strip().split(":")[0].strip().startswith("01"):
             p = message.text.strip().split(":")
@@ -1743,8 +2044,23 @@ def handle_text(message):
 # ==============================================================================
 
 
+# ------------------------------------------------------------------------------
+# 6.0 - _sleep_cancellable() : انتظار بيتقطع فوراً لو المستخدم داس إيقاف
+# ------------------------------------------------------------------------------
+def _sleep_cancellable(seconds, stop_event):
+    """يستنى ثواني بس بيرجع True فوراً لو اتحط طلب إيقاف (عشان الإيقاف يبقى فوري فعلاً)"""
+    if stop_event is None:
+        time.sleep(seconds)
+        return False
+    return stop_event.wait(timeout=seconds)
+
+
 def do_check_all(chat_id, is_auto=False):
-    """يفحص كل الأرقام واحد واحد مع تفاصيل كل محاولة - مع حماية من التهنيج"""
+    """يفحص كل الأرقام واحد واحد - بزرار ⏹️ إيقاف فوري + وضع هادئ + رسايل واضحة"""
+    # حدث الإيقاف بتاع الشات ده (الزرار أو /stop بيحطوه)
+    stop_event = threading.Event()
+    STOP_EVENTS[chat_id] = stop_event
+
     try:
         user_data = get_user_data(chat_id)
         accounts = user_data["accounts"]
@@ -1754,6 +2070,8 @@ def do_check_all(chat_id, is_auto=False):
         max_locked = settings.get("max_retries_account_locked", MAX_RETRIES_ACCOUNT_LOCKED)
         retry_delay = settings.get("retry_delay", RETRY_DELAY_SECONDS)
         delay_between = settings.get("delay_between_numbers", DELAY_BETWEEN_NUMBERS)
+        quiet = bool(settings.get("quiet_mode", QUIET_MODE))
+        use_fallback = bool(settings.get("selenium_fallback", SELENIUM_FALLBACK))
     except Exception as e:
         try:
             bot.send_message(chat_id, f"❌ خطأ تحميل البيانات: {e}")
@@ -1767,10 +2085,7 @@ def do_check_all(chat_id, is_auto=False):
         except:
             pass
         return
-    # احتياط: لو API مفعل مش محتاج سيلينيوم
-    if USE_API_LOGIN:
-        print("✅ API مفعل - مش محتاج سيلينيوم")
-    elif not SELENIUM_AVAILABLE:
+    if not USE_API_LOGIN and not SELENIUM_AVAILABLE:
         try:
             bot.send_message(chat_id, "❌ السيلينيوم مش متثبت على السيرفر!\nثبت: `pip install selenium webdriver-manager`\n\n💡 لو على Streamlit Cloud تأكد ان `packages.txt` فيه chromium")
         except:
@@ -1780,183 +2095,175 @@ def do_check_all(chat_id, is_auto=False):
     results = []
     total = len(accounts)
     auto_tag = "🔄 **فحص تلقائي**" if is_auto else "🚀 **ببدأ فحص**"
+
+    # زرار الإيقاف الفوري - بيظهر تحت رسالة البداية
+    stop_markup = types.InlineKeyboardMarkup()
+    stop_markup.add(types.InlineKeyboardButton("⏹️ إيقاف الفحص فوراً", callback_data=f"stop_{chat_id}"))
+
+    # رسالة البداية - بتتبعت دايماً (حتى في الوضع الهادئ) عشان زرار الإيقاف يكون قدامك
+    start_text = (f"{auto_tag} {total} رقم...\n\n"
+                  f"⚙️ معلق={max_retries} | باسورد={max_wrong} | حساب معلق={max_locked}\n"
+                  f"⏱️ انتظار بين المحاولات={retry_delay}ث | انتقال بين الأرقام={delay_between}ث\n"
+                  + ("🔕 وضع هادئ: الرسايل التفصيلية مقفولة - هيوصل ملخص بس\n" if quiet else "")
+                  + "\n👇 لو عايز تقف في أي وقت دوس الزرار ده أو ابعت /stop")
     try:
-        bot.send_message(chat_id, f"{auto_tag} {total} رقم...\n⚙️ معلق={max_retries} | باسورد={max_wrong} | حساب معلق={max_locked} | انتظار={retry_delay}ث | انتقال={delay_between}ث")
+        bot.send_message(chat_id, start_text, reply_markup=stop_markup)
     except:
         pass
 
+    api_fail_streak = 0  # عداد فشل API المتواصل (للتحويل التلقائي للمتصفح لو الـ fallback مفعل)
+
     for idx, acc in enumerate(accounts, 1):
+        if stop_event.is_set():
+            break
         try:
             phone = acc["phone"]
             password = acc["password"]
             name = acc.get("name") or phone
-            try:
-                if USE_API_LOGIN:
-                    status_msg = bot.send_message(chat_id, f"📱 **[{idx}/{total}] {phone} ({name})**\n⏳ بجهز API ⚡...")
-                else:
-                    status_msg = bot.send_message(chat_id, f"📱 **[{idx}/{total}] {phone} ({name})**\n⏳ بجهز المتصفح...")
-            except Exception as e:
-                print(f"Failed to send status_msg: {e}")
+            status_msg = None
+            if not quiet:
                 try:
-                    if USE_API_LOGIN:
-                        status_msg = bot.send_message(chat_id, f"[{idx}/{total}] {phone} - بجهز API ⚡...")
-                    else:
-                        status_msg = bot.send_message(chat_id, f"[{idx}/{total}] {phone} - بجهز المتصفح...")
-                except:
+                    status_msg = bot.send_message(chat_id, f"📱 **[{idx}/{total}]** `{phone}` ({name})\n⏳ بجهز...")
+                except Exception as e:
+                    print(f"Failed to send status_msg: {e}")
                     status_msg = None
             driver, last_error, last_details, success, balance = None, "", "", False, ""
             max_attempts = max(max_retries, max_wrong, max_locked)
+            # نستخدم المتصفح لو الـ API مطفي أصلاً، أو لو الـ fallback مفعل والـ API فشل 3 مرات ورا بعض
+            use_selenium_now = (not USE_API_LOGIN) or (use_fallback and api_fail_streak >= 3)
 
             for attempt in range(1, max_attempts + 1):
-                # لو API مفعل - جربه الأول (أسرع)
-                if USE_API_LOGIN:
-                    try:
-                        if status_msg:
-                            bot.edit_message_text(f"📱 **[{idx}/{total}] {phone}**\n🔄 محاولة {attempt}/{max_attempts} (API ⚡)...\n⏳ بيسجل...", chat_id, status_msg.message_id)
-                    except:
-                        pass
+                if stop_event.is_set():
+                    break
+                if not use_selenium_now:
+                    if not quiet and status_msg:
+                        try:
+                            bot.edit_message_text(f"📱 **[{idx}/{total}]** `{phone}`\n🔄 محاولة {attempt}/{max_attempts} (API ⚡)\n🌐 بيسجل دخول...", chat_id, status_msg.message_id)
+                        except:
+                            pass
                     ok, result, details = login_and_get_balance_api(phone, password, attempt, settings)
                 else:
                     if driver is None:
+                        if not quiet and status_msg:
+                            try:
+                                bot.edit_message_text(f"📱 **[{idx}/{total}]** `{phone}`\n🔄 محاولة {attempt}/{max_attempts} (المتصفح 🐢)\n⏳ بفتح كروم...", chat_id, status_msg.message_id)
+                            except:
+                                pass
                         driver = create_driver()
                         if not driver:
                             err_detail = globals().get("LAST_DRIVER_ERROR", "")
                             if err_detail:
-                                last_error = f"فشل تشغيل المتصفح: {err_detail[:150]}"
+                                last_error = "فشل تشغيل المتصفح"
                                 last_details = f"❌ فشل تشغيل كروم\n{err_detail[:300]}\n💡 تأكد ان packages.txt فيه:\nchromium\nchromium-driver\n"
                             else:
                                 last_error = "فشل تشغيل المتصفح - تأكد من تثبيت كروم"
                                 last_details = "❌ فشل تشغيل كروم\n"
                             break
-                    try:
-                        if status_msg:
-                            bot.edit_message_text(f"📱 **[{idx}/{total}] {phone}**\n🔄 محاولة {attempt}/{max_attempts}...\n⏳ بيسجل...", chat_id, status_msg.message_id)
-                    except:
-                        pass
+                    if not quiet and status_msg:
+                        try:
+                            bot.edit_message_text(f"📱 **[{idx}/{total}]** `{phone}`\n🔄 محاولة {attempt}/{max_attempts} (المتصفح 🐢)\n⏳ بيسجل...", chat_id, status_msg.message_id)
+                        except:
+                            pass
                     ok, result, details = login_and_get_balance_detailed(driver, phone, password, attempt, settings)
                 last_details = details
                 if ok:
                     success, balance = True, result
-                    try:
+                    if not use_selenium_now:
+                        api_fail_streak = 0
+                    if not quiet:
                         if status_msg:
-                            bot.edit_message_text(f"📱 **[{idx}/{total}] {phone}**\n{details}\n💰 **الرصيد: {balance}**", chat_id, status_msg.message_id)
+                            try:
+                                bot.edit_message_text(f"📱 **[{idx}/{total}]** `{phone}`\n{details}\n💰 **الرصيد: {balance}**", chat_id, status_msg.message_id)
+                            except:
+                                try:
+                                    bot.send_message(chat_id, f"✅ {phone}: {balance}")
+                                except:
+                                    pass
                         else:
-                            bot.send_message(chat_id, f"✅ {phone}: {balance}\n{details}")
-                    except:
-                        try:
-                            bot.send_message(chat_id, f"✅ {phone}: {balance}")
-                        except:
-                            pass
+                            try:
+                                bot.send_message(chat_id, f"✅ {phone}: {balance}")
+                            except:
+                                pass
                     break
-                else:
-                    last_error = result
-                    is_wrong = "الباسورد غلط" in result or "غير صحيح" in result
-                    is_locked = "الحساب معلق" in result or "معلق" in result
-                    detail_msg = f"📱 **[{idx}/{total}] {phone}**\n{details}\n❌ **فشل:** {result}\n"
-                    if is_locked:
-                        if attempt >= max_locked:
-                            detail_msg += f"⛔ خلصت محاولات الحساب المعلق ({max_locked}) -> للرقم اللي بعده ⏩"
-                            try:
-                                if status_msg:
-                                    bot.edit_message_text(detail_msg, chat_id, status_msg.message_id)
-                                else:
-                                    bot.send_message(chat_id, detail_msg)
-                            except:
-                                try:
-                                    bot.send_message(chat_id, detail_msg)
-                                except:
-                                    pass
-                            break
-                        else:
-                            detail_msg += f"⛔ هعيد بعد {retry_delay}ث... ({attempt}/{max_locked})"
-                            try:
-                                if status_msg:
-                                    bot.edit_message_text(detail_msg, chat_id, status_msg.message_id)
-                                else:
-                                    bot.send_message(chat_id, detail_msg)
-                            except:
-                                try:
-                                    bot.send_message(chat_id, detail_msg)
-                                except:
-                                    pass
-                    elif is_wrong:
-                        if attempt >= max_wrong:
-                            detail_msg += f"⏭️ خلصت باسورد غلط ({max_wrong}) -> للبعده ⏩"
-                            try:
-                                if status_msg:
-                                    bot.edit_message_text(detail_msg, chat_id, status_msg.message_id)
-                                else:
-                                    bot.send_message(chat_id, detail_msg)
-                            except:
-                                try:
-                                    bot.send_message(chat_id, detail_msg)
-                                except:
-                                    pass
-                            break
-                        else:
-                            detail_msg += f"⏳ هعيد بعد {retry_delay}ث... ({attempt}/{max_wrong})"
-                            try:
-                                if status_msg:
-                                    bot.edit_message_text(detail_msg, chat_id, status_msg.message_id)
-                                else:
-                                    bot.send_message(chat_id, detail_msg)
-                            except:
-                                try:
-                                    bot.send_message(chat_id, detail_msg)
-                                except:
-                                    pass
-                    else:
-                        if attempt >= max_retries:
-                            detail_msg += f"⏭️ خلصت معلق ({max_retries}) -> للبعده ⏩"
-                            try:
-                                if status_msg:
-                                    bot.edit_message_text(detail_msg, chat_id, status_msg.message_id)
-                                else:
-                                    bot.send_message(chat_id, detail_msg)
-                            except:
-                                try:
-                                    bot.send_message(chat_id, detail_msg)
-                                except:
-                                    pass
-                            break
-                        else:
-                            detail_msg += f"⏳ معلق - هعيد بعد {retry_delay}ث... ({attempt}/{max_retries})"
-                            try:
-                                if status_msg:
-                                    bot.edit_message_text(detail_msg, chat_id, status_msg.message_id)
-                                else:
-                                    bot.send_message(chat_id, detail_msg)
-                            except:
-                                try:
-                                    bot.send_message(chat_id, detail_msg)
-                                except:
-                                    pass
-                    # لو سيلينيوم: اقفل المتصفح عشان المحاولة الجاية تبدأ نظيف
-                    if not USE_API_LOGIN and driver:
+                # ---------- فشل ----------
+                last_error = result
+                cat = classify_error(result)
+                if not use_selenium_now:
+                    api_fail_streak += 1
+                    if use_fallback and api_fail_streak == 3:
                         try:
-                            driver.quit()
+                            bot.send_message(chat_id, "🔄 الـ API فشل 3 مرات ورا بعض — هحوّل للمتصفح تلقائياً (أبطأ بس بيتخطى الحماية)...")
                         except:
                             pass
-                        driver = None
-                    time.sleep(retry_delay)
+                icon = {"wrong": "🔴", "locked": "⛔", "connection": "🌐", "generic": "❌"}.get(cat, "❌")
+                # نص توضيحي: هل هيعيد ولا هينتقل للرقم اللي بعده؟
+                if cat == "locked":
+                    limit, limit_label = max_locked, "محاولات الحساب المعلق"
+                elif cat == "wrong":
+                    limit, limit_label = max_wrong, "محاولات الباسورد الغلط"
+                else:
+                    limit, limit_label = max_retries, "محاولات الاتصال بالموقع"
+                if attempt >= limit:
+                    wait_note = f"⏭️ خلصت {limit_label} ({limit}) — هننتقل للرقم اللي بعده"
+                    give_up = True
+                else:
+                    wait_note = f"⏳ هعيد تاني بعد {retry_delay}ث (المحاولة الجاية: {attempt+1} من {limit})"
+                    give_up = False
+                if not quiet:
+                    detail_msg = f"📱 **[{idx}/{total}]** `{phone}`\n{details}\n{icon} **فشل:** {result}\n{wait_note}"
+                    if status_msg:
+                        try:
+                            bot.edit_message_text(detail_msg, chat_id, status_msg.message_id)
+                        except:
+                            try:
+                                bot.send_message(chat_id, detail_msg)
+                            except:
+                                pass
+                    else:
+                        try:
+                            bot.send_message(chat_id, detail_msg)
+                        except:
+                            pass
+                if give_up:
+                    break
+                # لو سيلينيوم: اقفل المتصفح عشان المحاولة الجاية تبدأ نظيف
+                if use_selenium_now and driver:
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    driver = None
+                # انتظار بين المحاولات - بيتقطع فوراً لو داس إيقاف
+                if _sleep_cancellable(retry_delay, stop_event):
+                    break
+
             if driver:
                 try:
                     driver.quit()
                 except:
                     pass
+            # لو الإيقاف اتضغط والرقم ده ماخلصش -> سجله ملغي وكمّل التالي (هيقف عند أول الفحص التاني)
+            if stop_event.is_set() and not success:
+                results.append({"phone": phone, "name": name, "success": False,
+                                "balance": "⏹️ اتلغى - وقفت الفحص", "error": "⏹️ ملغي - الإيقاف اليدوي", "details": last_details})
+                continue
             results.append({"phone": phone, "name": name, "success": success, "balance": balance if success else last_error, "error": last_error, "details": last_details})
-            if idx < total:
+            # الانتقال بين الأرقام - بيتقطع فوراً لو داس إيقاف
+            if idx < total and not stop_event.is_set():
                 if delay_between > 0:
-                    try:
-                        bot.send_message(chat_id, f"⏩ خلص `{phone}` -> للـ `{accounts[idx]['phone']}` بعد {delay_between}ث...")
-                    except:
-                        pass
-                    time.sleep(delay_between)
+                    if not quiet:
+                        try:
+                            bot.send_message(chat_id, f"⏩ خلصنا `{phone}` — الرقم اللي بعده `{accounts[idx]['phone']}` بعد {delay_between}ث...")
+                        except:
+                            pass
+                    if _sleep_cancellable(delay_between, stop_event):
+                        break
                 else:
-                    try:
-                        bot.send_message(chat_id, f"⏩ خلص `{phone}` -> فوري للـ `{accounts[idx]['phone']}`...")
-                    except:
-                        pass
+                    if not quiet:
+                        try:
+                            bot.send_message(chat_id, f"⏩ خلصنا `{phone}` — فوري للرقم `{accounts[idx]['phone']}`...")
+                        except:
+                            pass
         except Exception as e:
             import traceback
             err = str(e)[:300]
@@ -1980,6 +2287,13 @@ def do_check_all(chat_id, is_auto=False):
                 pass
             continue
 
+    # حدث الإيقاف خلص دوره - نشيله عشان /stop يجي يقول مفيش فحص شغال
+    try:
+        if STOP_EVENTS.get(chat_id) is stop_event:
+            STOP_EVENTS.pop(chat_id, None)
+    except:
+        pass
+
     # حفظ
     try:
         user_data = get_user_data(chat_id)
@@ -1992,24 +2306,31 @@ def do_check_all(chat_id, is_auto=False):
     except:
         pass
 
-    # ملخص
+    # ملخص واضح بالعربي
     success_count = sum(1 for r in results if r["success"])
-    summary = f"🏁 **انتهى!** {'(تلقائي)' if is_auto else ''}\n✅ نجح: {success_count}/{total} | ❌ فشل: {total-success_count}/{total}\n🕐 {datetime.now().strftime('%H:%M:%S')}\n" + "─"*30 + "\n"
+    failed_count = sum(1 for r in results if not r["success"] and "الإيقاف" not in str(r.get("error", "")))
+    stopped_count = total - success_count - failed_count
+    if stop_event.is_set():
+        summary = f"⏹️ **تم الإيقاف!**\n✅ نجح: {success_count}/{total} | ❌ فشل: {failed_count}/{total} | ⏹️ أُلغي: {stopped_count}/{total}\n🕐 {datetime.now().strftime('%H:%M:%S')}\n" + "─"*30 + "\n"
+    else:
+        summary = f"🏁 **انتهى الفحص!** {'(تلقائي)' if is_auto else ''}\n✅ نجح: {success_count}/{total} | ❌ فشل: {failed_count}/{total}\n🕐 {datetime.now().strftime('%H:%M:%S')}\n" + "─"*30 + "\n"
     for i, r in enumerate(results, 1):
-        # احتياط: اهرب الرموز اللي ممكن تكسر Markdown
         safe_balance = str(r['balance'][:60]).replace('`','').replace('_','').replace('*','')
         safe_phone = str(r['phone'])
         summary += f"{i}. {'✅' if r['success'] else '❌'} `{safe_phone}`: {safe_balance}\n"
         if not r['success']:
-            if "معلق" in r['error']:
+            cat = classify_error(r['error'])
+            if str(r['error']).startswith("⏹️"):
+                summary += f"   ⏹️ اتلغى بسبب الإيقاف اليدوي\n"
+            elif cat == "locked":
                 summary += f"   ⛔ {r['error'][:90]}\n"
-            elif "الباسورد" in r['error']:
+            elif cat == "wrong":
                 summary += f"   🔴 {r['error'][:90]}\n"
             else:
                 summary += f"   💬 {r['error'][:90]}\n"
         else:
             summary += f"   💰 {r['balance'][:50]}\n"
-    summary += "\n" + "─"*30 + f"\n⚙️ معلق={max_retries} | باسورد={max_wrong} | حساب معلق={max_locked} | انتقال={delay_between}ث"
+    summary += "\n" + "─"*30 + f"\n⚙️ معلق={max_retries} | باسورد={max_wrong} | حساب معلق={max_locked} | انتظار={retry_delay}ث | انتقال={delay_between}ث"
     try:
         bot.send_message(chat_id, summary, reply_markup=main_menu())
     except:
@@ -2018,7 +2339,18 @@ def do_check_all(chat_id, is_auto=False):
         except:
             pass
 
-    # ⏰ المؤقت التلقائي
+    # ⏰ المؤقت التلقائي - مش بينط يجدول فحص جديد لو المستخدم لسه لاغيه
+    if stop_event.is_set():
+        try:
+            with open(RESULTS_CSV, "w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["الرقم","الاسم","الحالة","الرصيد/الخطأ","الوقت"])
+                for r in results:
+                    status = "نجح" if r["success"] else ("ملغي" if "الإيقاف" in str(r.get("error","")) else "فشل")
+                    w.writerow([r["phone"], r["name"], status, r["balance"], user_data.get("last_check_time","")])
+        except:
+            pass
+        return
     try:
         fresh = get_user_data(chat_id)
         if fresh["settings"].get("auto_check_enabled", AUTO_CHECK_ENABLED):
@@ -2031,7 +2363,7 @@ def do_check_all(chat_id, is_auto=False):
             except:
                 pass
             try:
-                bot.send_message(chat_id, f"⏰ **تلقائي شغال**\n✅ خلص {total} رقم\n⏳ هستنى **{format_interval(interval)}** ({interval}د)\n🕐 الجاي: `{next_str}`\n🔄 هيعيد من 1 لـ {total} تاني\n💡 غيره من ⚙️ الإعدادات", reply_markup=main_menu())
+                bot.send_message(chat_id, f"⏰ **الفحص التلقائي شغال**\n✅ خلص {total} رقم\n⏳ هستنى **{format_interval(interval)}** ({interval}د)\n🕐 الفحص الجاي: `{next_str}`\n🔄 هيعيد من 1 لـ {total} تاني لوحده\n💡 عايز تقفه؟ من ⚙️ الإعدادات -> 🔄 الفحص التلقائي", reply_markup=main_menu())
             except:
                 pass
             def job():
@@ -2040,7 +2372,7 @@ def do_check_all(chat_id, is_auto=False):
                     f = get_user_data(chat_id)
                     if f["settings"].get("auto_check_enabled") and f["accounts"]:
                         try:
-                            bot.send_message(chat_id, f"⏰ **جه وقت التلقائي!** فحص {len(f['accounts'])} رقم...")
+                            bot.send_message(chat_id, f"⏰ **جه وقت الفحص التلقائي!** بفحص {len(f['accounts'])} رقم...")
                         except:
                             pass
                         do_check_all(chat_id, is_auto=True)
@@ -2049,7 +2381,7 @@ def do_check_all(chat_id, is_auto=False):
             threading.Thread(target=job, daemon=True).start()
         else:
             try:
-                bot.send_message(chat_id, "💡 التلقائي مطفي - فعّله من ⚙️ لو عايز كل ساعة و20د")
+                bot.send_message(chat_id, "💡 الفحص التلقائي مطفي - فعّله من ⚙️ الإعدادات لو عايز الفحص يتكرر لوحده")
             except:
                 pass
     except Exception as e:
@@ -2059,7 +2391,8 @@ def do_check_all(chat_id, is_auto=False):
             w = csv.writer(f)
             w.writerow(["الرقم","الاسم","الحالة","الرصيد/الخطأ","الوقت"])
             for r in results:
-                w.writerow([r["phone"], r["name"], "نجح" if r["success"] else "فشل", r["balance"], user_data.get("last_check_time","")])
+                status = "نجح" if r["success"] else ("ملغي" if "الإيقاف" in str(r.get("error","")) else "فشل")
+                w.writerow([r["phone"], r["name"], status, r["balance"], user_data.get("last_check_time","")])
     except:
         pass
 
@@ -2105,7 +2438,9 @@ if __name__ == "__main__":
     print("🤖 بوت تليجرام فودافون")
     print(f"📱 توكن: {BOT_TOKEN[:15]}... (مخفي)")
     print(f"⚙️ معلق={MAX_RETRIES} | باسورد غلط={MAX_RETRIES_WRONG_PASSWORD} | حساب معلق={MAX_RETRIES_ACCOUNT_LOCKED}")
+    print(f"⏱️ مهلة API={API_TIMEOUT_SECONDS}ث | 🔕 هادئ={'شغال' if QUIET_MODE else 'مطفي'} | 🔄 Fallback={'شغال' if SELENIUM_FALLBACK else 'مطفي'} | 📦 حد الأرقام={MAX_ACCOUNTS}")
     print(f"⏰ تلقائي={'شغال كل '+format_interval(AUTO_CHECK_INTERVAL_MINUTES) if AUTO_CHECK_ENABLED else 'مطفي'} | انتقال={DELAY_BETWEEN_NUMBERS}ث")
+    print("⏹️ إيقاف الفحص: زرار تحت رسالة البداية أو /stop")
     print("="*60)
     if not TELEBOT_AVAILABLE:
         print("❌ pip install pyTelegramBotAPI selenium webdriver-manager"); exit(1)

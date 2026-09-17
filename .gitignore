@@ -1,0 +1,4 @@
+__pycache__/
+results.csv
+telegram_data.json
+*.zip
